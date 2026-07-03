@@ -1,0 +1,127 @@
+using System;
+using System.Diagnostics;
+using System.Linq;
+
+namespace MiniFan
+{
+    /// <summary>
+    /// Boucle de décision : lit les températures, détecte les jeux, et pilote le
+    /// Cooler Boost avec hystérésis (seuils ON/OFF distincts + durée minimum)
+    /// pour éviter que les ventilateurs fassent du yo-yo.
+    /// L'écriture EC ne se fait qu'aux TRANSITIONS de l'état voulu, pour respecter
+    /// un appui manuel FN+haut de l'utilisateur entre deux décisions.
+    /// </summary>
+    public class FanController
+    {
+        private readonly Config _cfg;
+        private readonly EcBridge _ec;
+        private DateTime _boostSince = DateTime.MinValue;
+        private bool? _lastWant;
+        private int _tick;
+        private string[] _gameNames = new string[0];
+        private string _gamesRaw;
+
+        public int? Cpu { get; private set; }
+        public int? Gpu { get; private set; }
+        public bool BoostActive { get; private set; }
+        public bool GameDetected { get; private set; }
+        public string GameName { get; private set; }
+        public string Reason { get; private set; }
+
+        public event Action Updated;
+
+        public FanController(Config cfg, EcBridge ec)
+        {
+            _cfg = cfg;
+            _ec = ec;
+            GameName = "";
+            Reason = "";
+        }
+
+        public void Tick()
+        {
+            _tick++;
+            Cpu = _ec.CpuTemp();
+            Gpu = _ec.GpuTemp();
+
+            if (_cfg.GameBoost && (_tick % 2 == 1)) DetectGame();
+            else if (!_cfg.GameBoost) { GameDetected = false; GameName = ""; }
+
+            bool want;
+            if (_cfg.Mode == "boost") { want = true; Reason = "mode manuel"; }
+            else if (_cfg.Mode == "silent") { want = false; Reason = "boost désactivé"; }
+            else
+            {
+                bool hot = (Cpu.HasValue && Cpu.Value >= _cfg.CpuOn) || (Gpu.HasValue && Gpu.Value >= _cfg.GpuOn);
+                bool cool = (!Cpu.HasValue || Cpu.Value <= _cfg.CpuOff) && (!Gpu.HasValue || Gpu.Value <= _cfg.GpuOff);
+                bool prev = _lastWant.HasValue && _lastWant.Value;
+                if (prev)
+                {
+                    bool heldLongEnough = (DateTime.UtcNow - _boostSince).TotalSeconds >= _cfg.MinBoostSeconds;
+                    want = !(cool && !GameDetected && heldLongEnough);
+                }
+                else
+                {
+                    want = hot || GameDetected;
+                }
+                Reason = GameDetected ? "jeu détecté : " + GameName
+                       : hot ? "température élevée"
+                       : want ? "refroidissement en cours" : "";
+            }
+
+            if (_ec.WriteSupported)
+            {
+                if (!_lastWant.HasValue || _lastWant.Value != want)
+                {
+                    if (_ec.SetCoolerBoost(want))
+                    {
+                        _lastWant = want;
+                        if (want) _boostSince = DateTime.UtcNow;
+                    }
+                }
+                bool? actual = _ec.GetCoolerBoost();
+                BoostActive = actual.HasValue ? actual.Value : want;
+            }
+            else
+            {
+                _lastWant = want;
+                BoostActive = false;
+            }
+
+            var h = Updated;
+            if (h != null) h();
+        }
+
+        private void DetectGame()
+        {
+            if (!ReferenceEquals(_gamesRaw, _cfg.Games))
+            {
+                _gamesRaw = _cfg.Games;
+                _gameNames = (_gamesRaw ?? "")
+                    .Split(new[] { ',', ';', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => s.Trim().ToLowerInvariant())
+                    .Select(s => s.EndsWith(".exe") ? s.Substring(0, s.Length - 4) : s)
+                    .Where(s => s.Length > 1)
+                    .ToArray();
+            }
+            GameDetected = false;
+            GameName = "";
+            if (_gameNames.Length == 0) return;
+            Process[] procs = Process.GetProcesses();
+            foreach (var p in procs)
+            {
+                try
+                {
+                    string n = p.ProcessName.ToLowerInvariant();
+                    if (_gameNames.Contains(n))
+                    {
+                        GameDetected = true;
+                        GameName = p.ProcessName;
+                    }
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+    }
+}

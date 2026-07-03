@@ -1,0 +1,4 @@
+build/
+diagnostic.txt
+config.json
+*.new
