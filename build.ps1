@@ -62,3 +62,35 @@ $exe = Join-Path $out "MiniFan.exe"
     "$root\src\*.cs"
 if ($LASTEXITCODE -ne 0) { throw "Échec de compilation csc" }
 Write-Host "OK -> $exe ($([math]::Round((Get-Item $exe).Length/1KB)) Ko)"
+
+# --- Signature Authenticode (optionnelle mais recommandée) ---
+# Rend EFFECTIVE la vérification de continuité de signature de l'auto-update
+# (Updater.VerifySignatureContinuity) : dès qu'une release est signée, les mises à
+# jour suivantes DOIVENT présenter la même signature pour s'installer — ce qui ferme
+# le risque résiduel « dépôt GitHub compromis pousse un binaire malveillant ».
+# Sans certificat fourni, on N'ÉCHOUE PAS : la build reste utilisable (simplement non
+# signée, la vérification se dégrade en avertissement comme aujourd'hui).
+# Fournir AU CHOIX :
+#   - MINIFAN_SIGN_THUMBPRINT : empreinte d'un certificat de signature de code présent
+#     dans le magasin (Cert:\CurrentUser\My ou LocalMachine\My), OU
+#   - MINIFAN_SIGN_PFX (+ MINIFAN_SIGN_PFX_PWD) : chemin d'un .pfx et son mot de passe.
+#   - MINIFAN_SIGN_TSA (optionnel) : URL d'horodatage RFC 3161 (défaut : DigiCert).
+$signThumb = $env:MINIFAN_SIGN_THUMBPRINT
+$signPfx = $env:MINIFAN_SIGN_PFX
+if ($signThumb -or $signPfx) {
+    if ($signPfx) {
+        if (-not (Test-Path $signPfx)) { throw "Certificat PFX introuvable : $signPfx" }
+        # X509Certificate2(path, password) fonctionne aussi sous Windows PowerShell 5.1
+        # (contrairement à Get-PfxCertificate -Password, absent en 5.1).
+        $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($signPfx, [string]$env:MINIFAN_SIGN_PFX_PWD)
+    } else {
+        $cert = Get-ChildItem "Cert:\CurrentUser\My\$signThumb", "Cert:\LocalMachine\My\$signThumb" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $cert) { throw "Aucun certificat trouvé pour l'empreinte MINIFAN_SIGN_THUMBPRINT=$signThumb" }
+    }
+    $tsa = if ($env:MINIFAN_SIGN_TSA) { $env:MINIFAN_SIGN_TSA } else { "http://timestamp.digicert.com" }
+    $sig = Set-AuthenticodeSignature -FilePath $exe -Certificate $cert -HashAlgorithm SHA256 -TimestampServer $tsa
+    if ($sig.Status -ne 'Valid') { throw "Signature Authenticode invalide : $($sig.StatusMessage)" }
+    Write-Host "Signé (Authenticode) : $($cert.Subject)" -ForegroundColor Green
+} else {
+    Write-Host "NB : build NON signée. Definis MINIFAN_SIGN_THUMBPRINT ou MINIFAN_SIGN_PFX pour activer la signature de code (l'auto-update n'imposera la continuite de signature qu'a partir d'une premiere release signee)." -ForegroundColor Yellow
+}

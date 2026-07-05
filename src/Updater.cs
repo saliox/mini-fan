@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -15,6 +16,11 @@ namespace MiniFan
     /// </summary>
     public class Updater
     {
+        // Dépôt officiel figé à la COMPILATION : la source des MAJ ne doit JAMAIS
+        // dépendre du config.json (modifiable par l'utilisateur) sous peine
+        // d'élévation de privilèges / RCE via une release piégée.
+        private const string OfficialRepo = "saliox/mini-fan";
+
         private readonly Config _cfg;
         private int _busy;
 
@@ -49,7 +55,7 @@ namespace MiniFan
             string json;
             using (var wc = NewClient())
             {
-                json = wc.DownloadString("https://api.github.com/repos/" + _cfg.UpdateRepo + "/releases/latest");
+                json = wc.DownloadString("https://api.github.com/repos/" + OfficialRepo + "/releases/latest");
             }
             var ser = new JavaScriptSerializer();
             var release = ser.Deserialize<Dictionary<string, object>>(json);
@@ -80,6 +86,12 @@ namespace MiniFan
             if (!File.Exists(newExe) || new FileInfo(newExe).Length < 50000)
             { SetStatus("Téléchargement invalide, MAJ annulée"); return; }
 
+            // Vérification de continuité Authenticode : le binaire téléchargé doit être
+            // signé par le MÊME signataire que l'exe en cours d'exécution. Sinon on refuse
+            // (protège contre une release piégée). Si l'exe courant n'est PAS signé, on ne
+            // peut pas imposer la continuité : on avertit et on continue (build non signé).
+            if (!VerifySignatureContinuity(exe, newExe)) return;
+
             SetStatus("Installation de la v" + remote + "…");
             string bat = Path.Combine(Path.GetTempPath(), "minifan-update.bat");
             int pid = Process.GetCurrentProcess().Id;
@@ -97,6 +109,56 @@ namespace MiniFan
             };
             Process.Start(psi);
             Environment.Exit(0);
+        }
+
+        /// <summary>
+        /// Compare le signataire Authenticode de l'exe courant et du binaire téléchargé.
+        /// Retourne true si la MAJ peut se poursuivre :
+        ///   - exe courant non signé  -> avertissement, on continue (build non signé toléré) ;
+        ///   - signataires identiques  -> on continue ;
+        ///   - signataires différents ou erreur de vérif -> on ABANDONNE (return false).
+        /// </summary>
+        private bool VerifySignatureContinuity(string currentExe, string newExe)
+        {
+            try
+            {
+                X509Certificate currentCert;
+                try
+                {
+                    currentCert = X509Certificate.CreateFromSignedFile(currentExe);
+                }
+                catch
+                {
+                    // Exe courant non signé : impossible d'imposer la continuité.
+                    SetStatus("binaire non signé — vérification de signature ignorée");
+                    return true;
+                }
+
+                X509Certificate newCert;
+                try
+                {
+                    newCert = X509Certificate.CreateFromSignedFile(newExe);
+                }
+                catch
+                {
+                    // L'exe courant est signé mais pas le téléchargement : refus.
+                    SetStatus("MAJ refusée : binaire téléchargé non signé");
+                    return false;
+                }
+
+                bool sameSubject = string.Equals(currentCert.Subject, newCert.Subject, StringComparison.Ordinal);
+                bool sameHash = string.Equals(currentCert.GetCertHashString(), newCert.GetCertHashString(), StringComparison.OrdinalIgnoreCase);
+                if (sameSubject && sameHash) return true;
+
+                SetStatus("MAJ refusée : signature du binaire différente");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                // Toute erreur inattendue de vérification annule la MAJ (fail-safe).
+                SetStatus("MAJ annulée : vérif signature (" + Short(ex.Message) + ")");
+                return false;
+            }
         }
 
         private static Version Normalize(Version v)

@@ -71,7 +71,18 @@ namespace MiniFan
 
             if (_ec.WriteSupported)
             {
-                if (!_lastWant.HasValue || _lastWant.Value != want)
+                // On lit l'état matériel RÉEL : après une veille/reprise ou un appui FN
+                // manuel qui remet le bit EC à zéro, le cache _lastWant ne suffit plus.
+                // Si la lecture échoue, on retombe sur l'ancienne comparaison au cache.
+                bool? actual;
+                try { actual = _ec.GetCoolerBoost(); }
+                catch { actual = null; }
+
+                bool stateDiffers = actual.HasValue
+                    ? (actual.Value != want)
+                    : (!_lastWant.HasValue || _lastWant.Value != want);
+
+                if (stateDiffers)
                 {
                     if (_ec.SetCoolerBoost(want))
                     {
@@ -79,7 +90,15 @@ namespace MiniFan
                         if (want) _boostSince = DateTime.UtcNow;
                     }
                 }
-                bool? actual = _ec.GetCoolerBoost();
+                else
+                {
+                    // État déjà conforme : on tient juste le cache à jour (et on démarre
+                    // le chrono d'hystérésis si le boost vient d'être considéré actif).
+                    if (want && (!_lastWant.HasValue || !_lastWant.Value))
+                        _boostSince = DateTime.UtcNow;
+                    _lastWant = want;
+                }
+
                 BoostActive = actual.HasValue ? actual.Value : want;
             }
             else
@@ -107,7 +126,11 @@ namespace MiniFan
             GameDetected = false;
             GameName = "";
             if (_gameNames.Length == 0) return;
-            Process[] procs = Process.GetProcesses();
+            Process[] procs;
+            // GetProcesses() peut lever (accès refusé, énumération transitoire) : en cas
+            // d'échec on renvoie « aucun jeu » plutôt que de faire planter la boucle.
+            try { procs = Process.GetProcesses(); }
+            catch { return; }
             foreach (var p in procs)
             {
                 try

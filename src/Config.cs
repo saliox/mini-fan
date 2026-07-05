@@ -24,6 +24,10 @@ namespace MiniFan
 
         // Mise a jour automatique via releases GitHub.
         public bool AutoUpdate = true;
+        // NOTE SECURITE : conserve pour compat de deserialisation uniquement. Le depot
+        // source des MAJ est desormais FIGE a la compilation (Updater.OfficialRepo) et
+        // ce champ n'influence PLUS l'URL de mise a jour (evite une elevation de
+        // privileges via un config.json modifie).
         public string UpdateRepo = "saliox/mini-fan";
 
         private static string FilePath
@@ -67,8 +71,10 @@ namespace MiniFan
             if (PollSeconds < 2) PollSeconds = 2;
             if (PollSeconds > 30) PollSeconds = 30;
             if (MinBoostSeconds < 15) MinBoostSeconds = 15;
+            // Plafond : sans borne haute, une valeur enorme empeche le boost de se couper
+            // (ventilateurs a fond en permanence).
+            if (MinBoostSeconds > 3600) MinBoostSeconds = 3600;
             if (Mode != "auto" && Mode != "boost" && Mode != "silent") Mode = "auto";
-            if (string.IsNullOrEmpty(UpdateRepo)) UpdateRepo = "saliox/mini-fan";
         }
     }
 }
