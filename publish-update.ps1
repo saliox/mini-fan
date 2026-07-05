@@ -21,14 +21,28 @@ Set-Content $verFile $content -Encoding UTF8
 if ($LASTEXITCODE -ne 0 -and -not (Test-Path (Join-Path $root "build\MiniFan.exe"))) { throw "Build en échec" }
 
 # 3. Commit + push + release GitHub
+# NB : $ErrorActionPreference="Stop" n'intercepte PAS l'échec d'une commande native
+# (git/gh). On vérifie donc $LASTEXITCODE après chaque appel pour ne jamais afficher
+# « publiée » sur un échec partiel.
 Push-Location $root
 try {
+    $exePath = Join-Path $root "build\MiniFan.exe"
+
     git add -A
+    if ($LASTEXITCODE -ne 0) { throw "git add a échoué (code $LASTEXITCODE)." }
     git commit -m "v$Version - $Notes"
+    if ($LASTEXITCODE -ne 0) { throw "git commit a échoué (code $LASTEXITCODE)." }
     git push
-    gh release create "v$Version" (Join-Path $root "build\MiniFan.exe") (Join-Path $root "install.ps1") `
+    if ($LASTEXITCODE -ne 0) { throw "git push a échoué (code $LASTEXITCODE)." }
+
+    gh release create "v$Version" $exePath (Join-Path $root "install.ps1") `
         --title "Mini Fan v$Version" --notes $Notes
+    if ($LASTEXITCODE -ne 0) { throw "gh release create a échoué (code $LASTEXITCODE)." }
+
+    # Empreinte SHA-256 du binaire publié (contrôle d'intégrité manuel côté utilisateur).
+    $sha = (Get-FileHash $exePath -Algorithm SHA256).Hash
     Write-Host ""
+    Write-Host "SHA-256 MiniFan.exe : $sha"
     Write-Host "v$Version publiée. Le portable se mettra à jour automatiquement." -ForegroundColor Green
 }
 finally { Pop-Location }

@@ -26,6 +26,15 @@ namespace MiniFan
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
+            // Filet de sécurité global : on journalise toute exception non gérée (dans un
+            // fichier à côté de l'exe) et on garde l'app en vie là où c'est raisonnable,
+            // plutôt que de crasher silencieusement.
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate (object s, ThreadExceptionEventArgs e)
+            { LogException("ThreadException", e.Exception); };
+            AppDomain.CurrentDomain.UnhandledException += delegate (object s, UnhandledExceptionEventArgs e)
+            { LogException("UnhandledException", e.ExceptionObject as Exception); };
+
             // L'accès WMI à l'EC exige les droits admin : on ne s'élève que si le
             // matériel MSI est présent (sinon mode démo sans UAC).
             if (!IsAdmin() && EcBridge.HardwareLikelyPresent())
@@ -68,6 +77,19 @@ namespace MiniFan
             }
 
             Application.Run(form);
+        }
+
+        private static void LogException(string source, Exception ex)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory, "minifan-error.log");
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [" + source + "] " +
+                    (ex != null ? ex.ToString() : "(exception inconnue)") + Environment.NewLine;
+                System.IO.File.AppendAllText(path, line);
+            }
+            catch { /* le logging ne doit jamais faire planter l'app */ }
         }
 
         public static bool IsAdmin()

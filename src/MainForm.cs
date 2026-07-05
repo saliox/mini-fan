@@ -654,10 +654,13 @@ namespace MiniFan
             try
             {
                 string exe = Process.GetCurrentProcess().MainModule.FileName;
+                // Échappement PowerShell : dans un littéral entre apostrophes, une apostrophe
+                // se double. Un chemin contenant une apostrophe casserait sinon la commande.
+                string exePs = exe.Replace("'", "''");
                 // Via PowerShell : schtasks ne sait pas autoriser le lancement sur batterie
                 // ni retirer la limite de durée (72 h) — indispensable sur un portable.
                 string cmd =
-                    "$a=New-ScheduledTaskAction -Execute '" + exe + "' -Argument '--tray';" +
+                    "$a=New-ScheduledTaskAction -Execute '" + exePs + "' -Argument '--tray';" +
                     "$t=New-ScheduledTaskTrigger -AtLogOn;" +
                     "$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
                     "-ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable;" +

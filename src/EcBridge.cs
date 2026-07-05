@@ -74,27 +74,45 @@ namespace MiniFan
 
         private byte[] Call(string method, byte[] input)
         {
+            // Les ManagementBaseObject encapsulent des objets COM : sans Dispose explicite,
+            // chaque lecture/écriture EC fuit un handle (problème sur une longue durée de vie).
             ManagementBaseObject inParams = null;
-            try { inParams = _inst.GetMethodParameters(method); } catch { }
-            if (inParams != null && input != null)
+            ManagementBaseObject outParams = null;
+            try
             {
-                string pname = null;
-                foreach (PropertyData p in inParams.Properties) { pname = p.Name; break; }
-                if (pname != null)
+                try { inParams = _inst.GetMethodParameters(method); } catch { }
+                if (inParams != null && input != null)
                 {
-                    var buf = new byte[32];
-                    Array.Copy(input, buf, Math.Min(32, input.Length));
-                    inParams[pname] = buf;
+                    string pname = null;
+                    foreach (PropertyData p in inParams.Properties) { pname = p.Name; break; }
+                    if (pname != null)
+                    {
+                        var buf = new byte[32];
+                        Array.Copy(input, buf, Math.Min(32, input.Length));
+                        inParams[pname] = buf;
+                    }
                 }
+                outParams = _inst.InvokeMethod(method, inParams, null);
+                if (outParams == null) return null;
+                foreach (PropertyData p in outParams.Properties)
+                {
+                    var arr = p.Value as byte[];
+                    if (arr != null)
+                    {
+                        // On recopie avant de disposer outParams : la valeur retournée ne
+                        // doit pas référencer un objet COM déjà libéré.
+                        var copy = new byte[arr.Length];
+                        Array.Copy(arr, copy, arr.Length);
+                        return copy;
+                    }
+                }
+                return null;
             }
-            ManagementBaseObject outParams = _inst.InvokeMethod(method, inParams, null);
-            if (outParams == null) return null;
-            foreach (PropertyData p in outParams.Properties)
+            finally
             {
-                var arr = p.Value as byte[];
-                if (arr != null) return arr;
+                if (inParams != null) inParams.Dispose();
+                if (outParams != null) outParams.Dispose();
             }
-            return null;
         }
 
         public int? ReadReg(byte addr)
@@ -182,17 +200,23 @@ namespace MiniFan
             if (!cur.HasValue) { Log("Écriture non testée (lecture 0x98 impossible)."); return; }
             _writeMethod = writeName;
             bool ok = WriteReg(REG_COOLER_BOOST, (byte)cur.Value);
+            // Relecture explicite du registre VISÉ (0x98) : on confirme qu'il contient bien
+            // la valeur écrite, en garde AND supplémentaire. Limitation : sur un firmware
+            // inconnu on ne peut PAS garantir l'innocuité d'une écriture croisée sur un autre
+            // registre ; ce test ne valide que 0x98 lui-même.
+            int? readBack = ReadReg(REG_COOLER_BOOST);
+            bool readBackOk = readBack.HasValue && readBack.Value == (byte)cur.Value;
             int? temp = ReadReg(REG_CPU_TEMP);
             bool tempOk = temp.HasValue && temp.Value >= 15 && temp.Value <= 105;
-            if (ok && tempOk)
+            if (ok && readBackOk && tempOk)
             {
                 WriteSupported = true;
-                Log("=> Écriture EC validée via " + writeName + " (écriture à blanc sur 0x98).");
+                Log("=> Écriture EC validée via " + writeName + " (écriture à blanc sur 0x98, relecture confirmée).");
             }
             else
             {
                 _writeMethod = null;
-                Log(string.Format("=> Écriture NON validée via {0} (relecture ok={1}, temp ok={2}).", writeName, ok, tempOk));
+                Log(string.Format("=> Écriture NON validée via {0} (relecture ok={1}, readback={2}, temp ok={3}).", writeName, ok, readBackOk, tempOk));
             }
         }
 
