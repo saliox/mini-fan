@@ -55,6 +55,13 @@ namespace MiniFan
             {
                 try { BeginInvoke((Action)RefreshUi); } catch { }
             };
+            // L'updateur appelle Environment.Exit(0) juste après avoir levé cet événement pour
+            // lancer l'installation : sans ça, l'icône de la zone de notification restait
+            // visible ("fantôme") jusqu'à ce que l'utilisateur passe la souris dessus.
+            _upd.BeforeExit += delegate
+            {
+                try { _tray.Visible = false; _tray.Dispose(); } catch { }
+            };
 
             _ctl.Tick();
         }
