@@ -18,6 +18,8 @@ namespace MiniFan
         private DateTime _boostSince = DateTime.MinValue;
         private bool? _lastWant;
         private int _tick;
+        private bool _cpuEverSeen;
+        private bool _gpuEverSeen;
         private string[] _gameNames = new string[0];
         private string _gamesRaw;
 
@@ -52,8 +54,18 @@ namespace MiniFan
             else if (_cfg.Mode == "silent") { want = false; Reason = "boost désactivé"; }
             else
             {
+                if (Cpu.HasValue) _cpuEverSeen = true;
+                if (Gpu.HasValue) _gpuEverSeen = true;
+
                 bool hot = (Cpu.HasValue && Cpu.Value >= _cfg.CpuOn) || (Gpu.HasValue && Gpu.Value >= _cfg.GpuOn);
-                bool cool = (!Cpu.HasValue || Cpu.Value <= _cfg.CpuOff) && (!Gpu.HasValue || Gpu.Value <= _cfg.GpuOff);
+                // Un capteur jamais vu (absent sur ce matériel, ex. pas de GPU dédié) est ignoré
+                // du calcul de "cool". Un capteur déjà vu mais dont la lecture échoue CE tick
+                // (glitch WMI/EC transitoire) est en revanche traité comme "pas cool" : on ne
+                // laisse pas une lecture manquante couper le Cooler Boost par erreur pendant une
+                // vraie surchauffe (fail-safe : on préfère continuer à refroidir dans le doute).
+                bool cpuCool = Cpu.HasValue ? Cpu.Value <= _cfg.CpuOff : !_cpuEverSeen;
+                bool gpuCool = Gpu.HasValue ? Gpu.Value <= _cfg.GpuOff : !_gpuEverSeen;
+                bool cool = cpuCool && gpuCool;
                 bool prev = _lastWant.HasValue && _lastWant.Value;
                 if (prev)
                 {
