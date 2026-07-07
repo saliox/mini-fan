@@ -35,12 +35,17 @@ try {
     git push
     if ($LASTEXITCODE -ne 0) { throw "git push a échoué (code $LASTEXITCODE)." }
 
-    gh release create "v$Version" $exePath (Join-Path $root "install.ps1") `
-        --title "Mini Fan v$Version" --notes $Notes
+    # Empreinte SHA-256 publiée EN ASSET avec la release : install.ps1 la télécharge
+    # et refuse d'installer un binaire qui ne correspond pas (intégrité vérifiée
+    # automatiquement, plus seulement affichée pour contrôle manuel).
+    $sha = (Get-FileHash $exePath -Algorithm SHA256).Hash
+    $shaPath = "$exePath.sha256"
+    Set-Content $shaPath "$sha  MiniFan.exe" -Encoding ASCII
+
+    gh release create "v$Version" $exePath $shaPath (Join-Path $root "install.ps1") `
+        --title "Mini Fan v$Version" --notes ($Notes + "`n`nSHA-256 MiniFan.exe : $sha")
     if ($LASTEXITCODE -ne 0) { throw "gh release create a échoué (code $LASTEXITCODE)." }
 
-    # Empreinte SHA-256 du binaire publié (contrôle d'intégrité manuel côté utilisateur).
-    $sha = (Get-FileHash $exePath -Algorithm SHA256).Hash
     Write-Host ""
     Write-Host "SHA-256 MiniFan.exe : $sha"
     Write-Host "v$Version publiée. Le portable se mettra à jour automatiquement." -ForegroundColor Green

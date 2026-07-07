@@ -28,10 +28,50 @@ if ($LocalExe -and (Test-Path $LocalExe)) {
 } else {
     Write-Host "Téléchargement de la dernière version…"
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "MiniFan-Install" }
+    $hdr = @{ "User-Agent" = "MiniFan-Install" }
+    $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $hdr
     $asset = $rel.assets | Where-Object { $_.name -eq "MiniFan.exe" } | Select-Object -First 1
     if (-not $asset) { throw "Aucun MiniFan.exe dans la dernière release de $repo" }
-    Invoke-WebRequest $asset.browser_download_url -OutFile $exe -Headers @{ "User-Agent" = "MiniFan-Install" }
+
+    # Téléchargement en fichier TEMPORAIRE : l'exe installé n'est remplacé qu'après
+    # vérification d'intégrité (sinon un téléchargement corrompu/altéré casserait
+    # l'install existante et serait lancé en admin au prochain boot).
+    $tmp = "$exe.download"
+    Invoke-WebRequest $asset.browser_download_url -OutFile $tmp -Headers $hdr
+    try {
+        # 1) Empreinte SHA-256 publiée avec la release (asset MiniFan.exe.sha256,
+        #    généré par publish-update.ps1). Comparaison stricte si présent.
+        $verified = $false
+        $shaAsset = $rel.assets | Where-Object { $_.name -eq "MiniFan.exe.sha256" } | Select-Object -First 1
+        if ($shaAsset) {
+            # Téléchargé en fichier (GitHub sert les assets en octet-stream :
+            # Invoke-RestMethod renverrait des octets, pas du texte).
+            $shaTmp = "$tmp.sha256"
+            Invoke-WebRequest $shaAsset.browser_download_url -OutFile $shaTmp -Headers $hdr
+            $expected = ((Get-Content $shaTmp -Raw).Trim() -split '\s+')[0]
+            Remove-Item $shaTmp -Force -ErrorAction SilentlyContinue
+            $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash
+            if ($actual -ne $expected) {
+                throw "SHA-256 du téléchargement ($actual) différent de l'empreinte publiée ($expected) — installation annulée."
+            }
+            $verified = $true
+            Write-Host "Intégrité vérifiée (SHA-256 conforme à l'empreinte publiée)."
+        }
+        # 2) Repli pour les releases sans asset .sha256 : exige une signature
+        #    Authenticode valide (même critère que l'auto-updater de l'app).
+        if (-not $verified) {
+            $sig = Get-AuthenticodeSignature $tmp
+            if ($sig.Status -ne 'Valid') {
+                throw "Pas d'empreinte SHA-256 publiée et signature Authenticode '$($sig.Status)' — installation annulée (binaire non vérifiable)."
+            }
+            Write-Host "Intégrité vérifiée (signature Authenticode valide)."
+        }
+        Move-Item $tmp $exe -Force
+    } finally {
+        foreach ($f in @($tmp, "$tmp.sha256")) {
+            if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+        }
+    }
     Write-Host "Version $($rel.tag_name) installée."
 }
 
