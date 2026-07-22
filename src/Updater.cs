@@ -105,15 +105,25 @@ namespace MiniFan
             string bat = Path.Combine(Path.GetTempPath(), "minifan-update-" + Guid.NewGuid().ToString("N") + ".bat");
             int pid = Process.GetCurrentProcess().Id;
             string newExeEscaped = newExe.Replace("'", "''");
+            string exeEscaped = exe.Replace("'", "''");
             File.WriteAllText(bat,
                 "@echo off\r\n" +
                 ":wait\r\n" +
                 "tasklist /fi \"PID eq " + pid + "\" | find \"" + pid + "\" >nul 2>&1 && (timeout /t 1 /nobreak >nul & goto wait)\r\n" +
                 // Re-vérification juste avant utilisation : réduit la fenêtre TOCTOU entre le
-                // contrôle fait plus haut et l'exécution réelle (le fichier temporaire pourrait
-                // en théorie être substitué par un autre processus local entre les deux).
+                // contrôle fait plus haut et l'exécution réelle (le fichier temporaire, dans un
+                // dossier utilisateur, pourrait en théorie être substitué par un autre processus
+                // local — même non-administrateur — entre les deux). On revérifie donc ICI la
+                // MÊME continuité de signature que VerifySignatureContinuity plus haut (pas
+                // seulement la validité du fichier téléchargé) : sinon un attaquant local pourrait
+                // profiter de cette fenêtre pour substituer un exécutable signé par N'IMPORTE QUEL
+                // tiers (au lieu du signataire de l'exe courant) et le faire passer ce second
+                // contrôle, ce qui viderait la garantie de continuité de son sens.
                 "powershell -NoProfile -ExecutionPolicy Bypass -Command " +
-                "\"if ((Get-AuthenticodeSignature -LiteralPath '" + newExeEscaped + "').Status -ne 'Valid') { exit 1 }\"\r\n" +
+                "\"$n = Get-AuthenticodeSignature -LiteralPath '" + newExeEscaped + "'; " +
+                "$c = Get-AuthenticodeSignature -LiteralPath '" + exeEscaped + "'; " +
+                "if ($n.Status -ne 'Valid') { exit 1 }; " +
+                "if ($c.Status -eq 'Valid' -and $n.SignerCertificate.Subject -ne $c.SignerCertificate.Subject) { exit 1 }\"\r\n" +
                 "if errorlevel 1 (del \"" + newExe + "\" >nul 2>&1 & del \"%~f0\" & exit /b 1)\r\n" +
                 "move /y \"" + newExe + "\" \"" + exe + "\" >nul\r\n" +
                 "start \"\" \"" + exe + "\" --tray\r\n" +

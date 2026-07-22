@@ -41,7 +41,11 @@ namespace MiniFan
             {
                 var searcher = new ManagementObjectSearcher(
                     new ManagementScope(@"root\WMI"), new ObjectQuery("SELECT * FROM MSI_ACPI"));
-                foreach (ManagementObject o in searcher.Get()) { _inst = o; break; }
+                // La collection (et son énumérateur COM) doit être libérée explicitement ;
+                // l'objet _inst conservé n'est PAS affecté par ce Dispose (c'est un wrapper
+                // COM distinct de la collection qui l'a produit).
+                using (var results = searcher.Get())
+                    foreach (ManagementObject o in results) { _inst = o; break; }
             }
             catch (Exception ex)
             {
@@ -65,7 +69,8 @@ namespace MiniFan
             {
                 var searcher = new ManagementObjectSearcher(
                     new ManagementScope(@"root\WMI"), new ObjectQuery("SELECT * FROM MSI_ACPI"));
-                return searcher.Get().Count > 0;
+                using (var results = searcher.Get())
+                    return results.Count > 0;
             }
             catch { return false; }
         }
@@ -262,15 +267,24 @@ namespace MiniFan
                     new ManagementScope(@"root\WMI"),
                     new ObjectQuery("SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"));
                 int best = -1;
-                foreach (ManagementObject o in searcher.Get())
+                // Cette méthode est appelée à CHAQUE tick sur les machines sans lecture EC
+                // valide (mode démo, ou glitch WMI) : sans Dispose explicite de la collection
+                // ET de chaque ManagementObject énuméré, chaque poll fuit des handles COM.
+                using (var results = searcher.Get())
                 {
-                    try
+                    foreach (ManagementObject o in results)
                     {
-                        int deciKelvin = Convert.ToInt32(o["CurrentTemperature"]);
-                        int c = (int)Math.Round(deciKelvin / 10.0 - 273.15);
-                        if (c > best && c > 0 && c < 120) best = c;
+                        using (o)
+                        {
+                            try
+                            {
+                                int deciKelvin = Convert.ToInt32(o["CurrentTemperature"]);
+                                int c = (int)Math.Round(deciKelvin / 10.0 - 273.15);
+                                if (c > best && c > 0 && c < 120) best = c;
+                            }
+                            catch { }
+                        }
                     }
-                    catch { }
                 }
                 return best > 0 ? (int?)best : null;
             }
