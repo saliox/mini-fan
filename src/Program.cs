@@ -46,6 +46,11 @@ namespace MiniFan
                         UseShellExecute = true,
                         Verb = "runas"
                     };
+                    // On libère le mutex AVANT Process.Start : le futur processus élevé doit
+                    // pouvoir l'acquérir (sinon il se croirait en double instance et
+                    // s'arrêterait immédiatement). Si le lancement élevé échoue ensuite (UAC
+                    // refusé, Explorer/AppInfo indisponible, etc.), ce process NON élevé
+                    // continue plus bas sans qu'aucune instance ne détienne plus le mutex.
                     _mutex.ReleaseMutex();
                     _mutex.Dispose();
                     Process.Start(psi);
@@ -53,8 +58,15 @@ namespace MiniFan
                 }
                 catch
                 {
-                    // UAC refusé : on continue sans pilotage (lecture seule impossible aussi,
-                    // l'UI l'indiquera).
+                    // UAC refusé (ou autre échec du lancement élevé) : on continue sans
+                    // pilotage, mais il faut RECRÉER le mutex tout de suite pour restaurer la
+                    // protection "instance unique" qu'on vient d'abandonner ci-dessus — sans
+                    // ça, ce process continue de tourner sans aucune protection et une
+                    // deuxième instance (ex. tâche planifiée au prochain démarrage) pourrait se
+                    // lancer en parallèle et entrer en conflit sur les écritures EC.
+                    bool createdAgain;
+                    _mutex = new Mutex(true, "MiniFan-Hasu-SingleInstance", out createdAgain);
+                    if (!createdAgain) return;
                 }
             }
 
