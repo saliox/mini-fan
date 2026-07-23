@@ -258,21 +258,29 @@ namespace MiniFan
         {
             try
             {
-                var searcher = new ManagementObjectSearcher(
+                // Comme pour Call() plus haut : les ManagementObjectSearcher / ManagementObjectCollection /
+                // ManagementObject encapsulent des objets COM et fuient des handles sans Dispose explicite.
+                using (var searcher = new ManagementObjectSearcher(
                     new ManagementScope(@"root\WMI"),
-                    new ObjectQuery("SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"));
-                int best = -1;
-                foreach (ManagementObject o in searcher.Get())
+                    new ObjectQuery("SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature")))
+                using (var results = searcher.Get())
                 {
-                    try
+                    int best = -1;
+                    foreach (ManagementObject o in results)
                     {
-                        int deciKelvin = Convert.ToInt32(o["CurrentTemperature"]);
-                        int c = (int)Math.Round(deciKelvin / 10.0 - 273.15);
-                        if (c > best && c > 0 && c < 120) best = c;
+                        using (o)
+                        {
+                            try
+                            {
+                                int deciKelvin = Convert.ToInt32(o["CurrentTemperature"]);
+                                int c = (int)Math.Round(deciKelvin / 10.0 - 273.15);
+                                if (c > best && c > 0 && c < 120) best = c;
+                            }
+                            catch { }
+                        }
                     }
-                    catch { }
+                    return best > 0 ? (int?)best : null;
                 }
-                return best > 0 ? (int?)best : null;
             }
             catch { return null; }
         }

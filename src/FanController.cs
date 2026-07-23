@@ -20,12 +20,25 @@ namespace MiniFan
         private int _tick;
         private bool _cpuEverSeen;
         private bool _gpuEverSeen;
+        private int _cpuFailStreak;
         private string[] _gameNames = new string[0];
         private string _gamesRaw;
 
         public int? Cpu { get; private set; }
         public int? Gpu { get; private set; }
         public bool BoostActive { get; private set; }
+        // Vrai quand la dernière lecture EC du bit Cooler Boost a échoué : BoostActive
+        // ci-dessus n'a alors PAS été mis à jour depuis le cache/want (cf. Tick()) et
+        // reflète seulement la dernière valeur RÉELLEMENT confirmée. À surfacer dans l'UI.
+        public bool BoostStateUnknown { get; private set; }
+        // Vrai quand le capteur de température CPU n'a produit aucune lecture exploitable
+        // depuis un nombre significatif de sondages consécutifs alors que l'EC est
+        // pourtant piloté avec succès (WriteSupported) : indique un état thermique
+        // inconnu (WMI cassé en cours de route, modèle non supporté pour ce registre),
+        // à distinguer d'une simple absence de GPU dédié (qui, elle, est normale et
+        // silencieuse). Ne change PAS la décision de boost : sert uniquement à rendre
+        // la panne de supervision visible plutôt que de la masquer en "tout va bien".
+        public bool ThermalMonitoringFailed { get; private set; }
         public bool GameDetected { get; private set; }
         public string GameName { get; private set; }
         public string Reason { get; private set; }
@@ -45,6 +58,21 @@ namespace MiniFan
             _tick++;
             Cpu = _ec.CpuTemp();
             Gpu = _ec.GpuTemp();
+
+            // Suivi des échecs de lecture CPU pour détecter une supervision thermique
+            // cassée (cf. ThermalMonitoringFailed ci-dessus). On ne fait pas ce suivi côté
+            // GPU : un GPU dédié durablement absent est un cas normal (portable sans dGPU)
+            // qu'on ne peut pas distinguer, avec les données dont on dispose ici, d'un
+            // capteur GPU réellement en panne — on ne veut pas inventer une heuristique
+            // matérielle non vérifiable pour ça.
+            if (Cpu.HasValue) _cpuFailStreak = 0;
+            else if (_cpuFailStreak < int.MaxValue) _cpuFailStreak++;
+            // Seuil ~= 60s de sondages ratés consécutifs (ou au moins 5 sondages), quel
+            // que soit PollSeconds. On n'exige la supervision que si l'EC est par ailleurs
+            // piloté avec succès : si WriteSupported est faux, l'UI l'indique déjà
+            // séparément ("PILOTAGE KO").
+            int failThreshold = Math.Max(5, 60 / Math.Max(1, _cfg.PollSeconds));
+            ThermalMonitoringFailed = _ec.WriteSupported && _cpuFailStreak >= failThreshold;
 
             if (_cfg.GameBoost && (_tick % 2 == 1)) DetectGame();
             else if (!_cfg.GameBoost) { GameDetected = false; GameName = ""; }
@@ -111,12 +139,19 @@ namespace MiniFan
                     _lastWant = want;
                 }
 
-                BoostActive = actual.HasValue ? actual.Value : want;
+                // Lecture EC en échec ce tick : on NE déduit PAS BoostActive du cache/want
+                // (ça pourrait prétendre à tort que le boost est actif alors que le firmware
+                // a pu remettre le bit à zéro, ex. reprise de veille — cf. commentaire plus
+                // haut). On conserve la dernière valeur RÉELLEMENT confirmée par lecture et
+                // on expose BoostStateUnknown pour que l'UI le rende visible.
+                BoostStateUnknown = !actual.HasValue;
+                if (actual.HasValue) BoostActive = actual.Value;
             }
             else
             {
                 _lastWant = want;
                 BoostActive = false;
+                BoostStateUnknown = false;
             }
 
             var h = Updated;

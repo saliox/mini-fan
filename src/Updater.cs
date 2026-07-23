@@ -91,7 +91,11 @@ namespace MiniFan
                 wc.DownloadFile(url, newExe);
             }
             if (!File.Exists(newExe) || new FileInfo(newExe).Length < 50000)
-            { SetStatus("Téléchargement invalide, MAJ annulée"); return; }
+            {
+                SetStatus("Téléchargement invalide, MAJ annulée");
+                TryDeleteFile(newExe);
+                return;
+            }
 
             // Vérification Authenticode RÉELLE (WinVerifyTrust, pas juste lecture du certificat
             // embarqué) : le binaire téléchargé doit porter une signature valide dont la chaîne
@@ -99,7 +103,7 @@ namespace MiniFan
             // signataire doit être identique (continuité). Si l'un ou l'autre échoue, on refuse
             // — y compris quand l'exe courant n'est pas signé : un build non signé ne peut plus
             // servir de prétexte pour installer n'importe quel binaire téléchargé sans vérif.
-            if (!VerifySignatureContinuity(exe, newExe)) return;
+            if (!VerifySignatureContinuity(exe, newExe)) { TryDeleteFile(newExe); return; }
 
             SetStatus("Installation de la v" + remote + "…");
             string bat = Path.Combine(Path.GetTempPath(), "minifan-update-" + Guid.NewGuid().ToString("N") + ".bat");
@@ -293,6 +297,14 @@ namespace MiniFan
             var wc = new WebClient();
             wc.Headers[HttpRequestHeader.UserAgent] = "MiniFan-Updater/" + AppVersion.Number;
             return wc;
+        }
+
+        // Nettoie le .exe.new déjà téléchargé quand la MAJ est abandonnée après coup
+        // (taille invalide, signature refusée) : sans ça le fichier temporaire reste
+        // indéfiniment à côté de l'exe.
+        private static void TryDeleteFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
 
         private static string Short(string s)

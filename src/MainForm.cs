@@ -23,6 +23,10 @@ namespace MiniFan
         public static readonly Color ColAccent = Color.FromArgb(79, 195, 247);
         public static readonly Color ColHot = Color.FromArgb(255, 112, 82);
         public static readonly Color ColOk = Color.FromArgb(84, 214, 156);
+        // Avertissement : distinct de ColHot (panne de pilotage EC) et de ColAccent (boost
+        // actif) — utilisé quand le pilotage EC fonctionne mais que la supervision
+        // thermique ou l'état réel du boost est incertain (cf. FanController).
+        public static readonly Color ColWarn = Color.FromArgb(245, 166, 35);
 
         private NotifyIcon _tray;
         private Icon _icoIdle, _icoBoost, _icoHot;
@@ -35,10 +39,18 @@ namespace MiniFan
         private Label _footer;
         private Timer _logicTimer, _uiTimer;
         private bool _allowVisible;
+        // Copie de _upd.Status lue UNIQUEMENT depuis le thread UI, soit ici en
+        // construction (avant tout accès concurrent), soit via le handler _upd.Changed
+        // ci-dessous qui est déjà marshalé avec BeginInvoke. RefreshUi() (appelé aussi
+        // depuis le tick minuteur de l'UI) lit cette copie plutôt que le champ
+        // Updater.Status directement, pour ne jamais lire un champ écrit par le thread
+        // ThreadPool en arrière-plan (Updater.Check()) sans passer par ce marshaling.
+        private string _updStatusText;
 
         public MainForm(Config cfg, EcBridge ec, FanController ctl, Updater upd, bool startVisible)
         {
             _cfg = cfg; _ec = ec; _ctl = ctl; _upd = upd;
+            _updStatusText = upd.Status;
             _allowVisible = startVisible;
             BuildWindow();
             BuildControls();
@@ -53,7 +65,9 @@ namespace MiniFan
             _ctl.Updated += delegate { RefreshTray(); if (Visible) RefreshUi(); };
             _upd.Changed += delegate
             {
-                try { BeginInvoke((Action)RefreshUi); } catch { }
+                // Toute lecture de _upd.Status doit passer par ici : c'est le seul endroit
+                // marshalé sur le thread UI via BeginInvoke pour ce champ écrit en arrière-plan.
+                try { BeginInvoke((Action)delegate { _updStatusText = _upd.Status; RefreshUi(); }); } catch { }
             };
             // L'updateur appelle Environment.Exit(0) juste après avoir levé cet événement pour
             // lancer l'installation : sans ça, l'icône de la zone de notification restait
@@ -332,6 +346,22 @@ namespace MiniFan
                 _statusPill.Text = "PILOTAGE KO → DIAGNOSTIC";
                 _statusPill.ForeColor = ColHot;
             }
+            else if (_ctl.ThermalMonitoringFailed)
+            {
+                // Capteur de température CPU en échec prolongé : état thermique réellement
+                // inconnu (pas "tout va bien"). Couleur distincte et non manquable, cf.
+                // FanController.ThermalMonitoringFailed.
+                _statusPill.Text = "⚠  TEMPÉRATURE INCONNUE — CAPTEUR EN ÉCHEC";
+                _statusPill.ForeColor = ColWarn;
+            }
+            else if (_ctl.BoostStateUnknown)
+            {
+                // Dernière lecture EC du bit Cooler Boost en échec : BoostActive reflète la
+                // dernière valeur confirmée, pas forcément l'état matériel actuel.
+                _statusPill.Text = "⚠  ÉTAT VENTILATEUR INCERTAIN…" +
+                    (_ctl.Reason.Length > 0 ? "  ·  " + _ctl.Reason : "");
+                _statusPill.ForeColor = ColWarn;
+            }
             else if (_ctl.BoostActive)
             {
                 _statusPill.Text = "❄  COOLER BOOST ACTIF" +
@@ -347,7 +377,11 @@ namespace MiniFan
             _btnAuto.Active = _cfg.Mode == "auto";
             _btnBoost.Active = _cfg.Mode == "boost";
             _btnSilent.Active = _cfg.Mode == "silent";
-            _footer.Text = _upd.Status;
+            // Ne PAS lire _upd.Status ici directement : ce champ est écrit depuis un thread
+            // ThreadPool en arrière-plan (Updater.Check()). On utilise la copie marshalée
+            // via le handler _upd.Changed (cf. constructeur) pour rester cohérent avec le
+            // seul chemin de marshaling déjà en place pour cette donnée.
+            _footer.Text = _updStatusText;
         }
 
         private void RefreshTray()

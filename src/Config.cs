@@ -43,7 +43,15 @@ namespace MiniFan
                 {
                     var ser = new JavaScriptSerializer();
                     var cfg = ser.Deserialize<Config>(File.ReadAllText(FilePath));
-                    if (cfg != null) { cfg.Sanitize(); return cfg; }
+                    if (cfg != null)
+                    {
+                        // Si Sanitize() a dû corriger une valeur corrompue/hors bornes, on
+                        // réécrit le fichier tout de suite : sinon la réparation ne vit qu'en
+                        // mémoire et le fichier sur disque reste corrompu indéfiniment (il sera
+                        // "réparé" à chaque démarrage sans jamais être vraiment corrigé).
+                        if (cfg.Sanitize()) cfg.Save();
+                        return cfg;
+                    }
                 }
             }
             catch { }
@@ -62,8 +70,15 @@ namespace MiniFan
             catch { }
         }
 
-        private void Sanitize()
+        /// <summary>Corrige en mémoire les valeurs corrompues/hors bornes. Retourne true si
+        /// au moins une valeur a effectivement été modifiée (l'appelant doit alors persister
+        /// la correction via Save(), sans quoi le fichier sur disque reste corrompu).</summary>
+        private bool Sanitize()
         {
+            int origCpuOn = CpuOn, origGpuOn = GpuOn, origCpuOff = CpuOff, origGpuOff = GpuOff,
+                origPollSeconds = PollSeconds, origMinBoostSeconds = MinBoostSeconds;
+            string origMode = Mode;
+
             if (CpuOn < 40) CpuOn = 40; if (CpuOn > 95) CpuOn = 95;
             if (GpuOn < 40) GpuOn = 40; if (GpuOn > 95) GpuOn = 95;
             CpuOff = CpuOn - 10;
@@ -75,6 +90,10 @@ namespace MiniFan
             // (ventilateurs a fond en permanence).
             if (MinBoostSeconds > 3600) MinBoostSeconds = 3600;
             if (Mode != "auto" && Mode != "boost" && Mode != "silent") Mode = "auto";
+
+            return origCpuOn != CpuOn || origGpuOn != GpuOn || origCpuOff != CpuOff ||
+                   origGpuOff != GpuOff || origPollSeconds != PollSeconds ||
+                   origMinBoostSeconds != MinBoostSeconds || origMode != Mode;
         }
     }
 }

@@ -46,15 +46,21 @@ namespace MiniFan
                         UseShellExecute = true,
                         Verb = "runas"
                     };
+                    // On ne libère le mutex mono-instance qu'APRÈS le succès confirmé de
+                    // Process.Start (le process élevé prendra le relais). Si l'utilisateur
+                    // annule l'invite UAC, Process.Start lève avant qu'on relâche le mutex :
+                    // ce process continue donc de tourner (sans pilotage) et reste l'unique
+                    // détenteur du mutex, ce qui empêche une seconde instance non élevée de
+                    // démarrer plus tard et de se disputer les mêmes écritures EC.
+                    Process.Start(psi);
                     _mutex.ReleaseMutex();
                     _mutex.Dispose();
-                    Process.Start(psi);
                     return;
                 }
                 catch
                 {
                     // UAC refusé : on continue sans pilotage (lecture seule impossible aussi,
-                    // l'UI l'indiquera).
+                    // l'UI l'indiquera). Le mutex est toujours détenu par CE process.
                 }
             }
 
