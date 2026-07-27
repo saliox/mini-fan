@@ -1,50 +1,68 @@
 # Mini Fan 🌀
 
-Contrôle automatique du **Cooler Boost** (ventilateurs à fond, l'équivalent de FN+↑)
-sur portable MSI. Petite app de barre des tâches (~50 Mo de RAM, ~0 % CPU), aucune dépendance.
+Le Cooler Boost de ton portable MSI (les ventilateurs à fond, l'équivalent de FN+↑), mais déclenché
+tout seul quand il faut. Petite appli dans la barre des tâches : ~50 Mo de RAM, quasiment pas de CPU,
+aucune dépendance à installer.
 
-## Ce que ça fait
+## Comment ça marche
 
-- Lit les températures CPU/GPU directement dans l'Embedded Controller MSI
-  (registres `0x68` / `0x80`), via l'interface WMI `MSI_ACPI` du BIOS — **aucun pilote tiers**.
-- Active le Cooler Boost (registre `0x98`, bit 7) quand :
-  - le CPU dépasse **75 °C** ou le GPU **70 °C** (réglable dans l'app), **ou**
-  - un **jeu** de la liste est lancé (Fortnite, Valorant, Minecraft… liste modifiable).
-- Le désactive avec hystérésis (CPU ≤ 65 °C **et** GPU ≤ 60 °C, minimum 60 s de boost)
-  pour éviter le yo-yo des ventilateurs.
-- Trois modes : **Auto** / **Boost** permanent / **Repos** (jamais de boost).
-- Se met à jour **toute seule** depuis les releases GitHub de ce dépôt.
-- Démarre avec Windows (tâche planifiée élevée, active sur batterie).
+Mini Fan lit les températures CPU et GPU **directement dans l'Embedded Controller** de MSI, via
+l'interface WMI `MSI_ACPI` du BIOS. Aucun pilote tiers, rien à installer à côté.
 
-## Installation (sur le portable MSI)
+Il met les ventilateurs à fond quand :
 
-PowerShell **en administrateur** :
+- le CPU dépasse **75 °C** ou le GPU **70 °C** (les deux sont réglables), **ou**
+- un **jeu** de ta liste se lance (Fortnite, Valorant, Minecraft… la liste est modifiable).
+
+Et il les redescend quand le CPU repasse sous 65 °C **et** le GPU sous 60 °C, avec un minimum de 60 s
+de boost — sinon les ventilateurs feraient du yo-yo à chaque pic de température.
+
+Trois modes selon ton humeur : **Auto**, **Boost** permanent, ou **Repos** (jamais de boost).
+
+L'appli démarre avec Windows et se met à jour toute seule depuis les releases de ce dépôt.
+
+## Installation
+
+Sur le portable MSI, dans un PowerShell **administrateur** :
 
 ```powershell
 irm https://raw.githubusercontent.com/saliox/mini-fan/main/install.ps1 | iex
 ```
 
-C'est tout : l'app est installée dans `%LOCALAPPDATA%\MiniFan`, démarre avec Windows
-et apparaît en icône ventilateur à côté de l'horloge.
+C'est tout. L'appli s'installe dans `%LOCALAPPDATA%\MiniFan`, démarre avec Windows, et apparaît en
+icône ventilateur à côté de l'horloge.
 
-## Publier une mise à jour (depuis la tour)
+L'installeur **vérifie le binaire avant de l'installer** : il compare son empreinte SHA-256 à celle
+publiée avec la release, et refuse d'installer quoi que ce soit qui ne corresponde pas.
+
+## Si ça ne pilote pas sur ton modèle
+
+Tous les portables MSI n'exposent pas leur contrôleur de la même façon. Ouvre l'appli, clique
+**Diagnostic** : le rapport est copié dans ton presse-papiers. Colle-le dans une
+[issue](../../issues) et la sonde pourra être adaptée à ton modèle.
+
+Par sécurité, Mini Fan ne s'autorise à écrire dans le contrôleur qu'après avoir vérifié qu'une écriture
+neutre se comporte comme attendu. Si ce test échoue, il passe en lecture seule plutôt que de risquer
+d'écrire au mauvais endroit.
+
+## Publier une mise à jour
+
+Depuis la machine de développement :
 
 ```powershell
 .\publish-update.ps1 -Version 1.1.0 -Notes "Ce qui change"
 ```
 
-Le portable installe la nouvelle version tout seul (vérification au démarrage puis toutes les 6 h).
+Le script construit, publie la release avec son empreinte SHA-256, et les portables installés récupèrent
+la nouvelle version tout seuls — au démarrage, puis toutes les 6 h.
 
-## Si le pilotage ne marche pas sur ton modèle
+Les mises à jour ne s'installent que si la signature Authenticode du binaire est valide **et** provient
+du même signataire que la version en place.
 
-Ouvre l'app → clique **Diagnostic** → le rapport est copié dans le presse-papiers :
-colle-le dans la conversation Claude et j'adapterai la sonde (certains vieux modèles
-MSI « WMI1 » ont une interface différente).
-
-## Build
+## Compiler
 
 ```powershell
-.\build.ps1     # csc natif .NET Framework 4.8, sortie dans build\MiniFan.exe
+.\build.ps1     # csc natif, .NET Framework 4.8 → build\MiniFan.exe
 ```
 
 ## Références
