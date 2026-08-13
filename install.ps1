@@ -35,6 +35,16 @@ if ($LocalExe -and (Test-Path $LocalExe)) {
     Write-Host "Version $($rel.tag_name) installée."
 }
 
+# Vérification Authenticode obligatoire AVANT toute exécution / élévation : sans ça,
+# un exe corrompu ou remplacé (release GitHub compromise, MITM, etc.) serait lancé
+# avec les droits élevés de la tâche planifiée sans aucun contrôle.
+$sig = Get-AuthenticodeSignature -LiteralPath $exe
+if ($sig.Status -ne 'Valid') {
+    Write-Host "ERREUR : signature Authenticode invalide ou absente pour $exe (statut : $($sig.Status)). Installation annulée." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Signature Authenticode valide : $($sig.SignerCertificate.Subject)" -ForegroundColor Green
+
 # Tâche planifiée : lancement à l'ouverture de session, droits élevés (pas d'UAC à chaque boot),
 # autorisée sur batterie et sans limite de durée (portable !)
 $act = New-ScheduledTaskAction -Execute $exe -Argument "--tray"

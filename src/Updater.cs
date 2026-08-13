@@ -155,9 +155,21 @@ namespace MiniFan
                 catch
                 {
                     // Exe courant non signé (build de développement) : la continuité de
-                    // signataire n'est pas vérifiable, mais le téléchargement a déjà été validé
-                    // cryptographiquement ci-dessus (signature + chaîne de confiance réelles).
-                    SetStatus("binaire courant non signé — continuité non vérifiable, signature du téléchargement validée");
+                    // signataire n'est PAS vérifiable. On ne bloque pas la MAJ (un build de dev
+                    // doit pouvoir continuer à se mettre à jour), mais on ne prétend PAS non plus
+                    // que tout est vérifié comme dans le cas d'une continuité confirmée : c'est un
+                    // état de confiance DÉGRADÉ, car n'importe quel certificat Authenticode valide
+                    // et fiable au sens de Windows (pas forcément celui du vrai développeur) serait
+                    // accepté. Le process redémarre juste après une MAJ acceptée, donc un simple
+                    // SetStatus() en mémoire ne survivrait pas assez longtemps pour être vu :
+                    // on journalise donc cet évènement de façon durable pour qu'il ne soit jamais
+                    // silencieux.
+                    string signer = "(inconnu)";
+                    try { signer = X509Certificate.CreateFromSignedFile(newExe).Subject; } catch { }
+                    LogDegradedTrust(
+                        "MAJ installée SANS continuité de signature vérifiable (build courant non " +
+                        "signé) — signataire du téléchargement : " + signer);
+                    SetStatus("⚠ MAJ installée : continuité de signature NON vérifiable (build courant non signé)");
                     return true;
                 }
 
@@ -181,7 +193,10 @@ namespace MiniFan
 
         private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
         private const uint WTD_UI_NONE = 2;
-        private const uint WTD_REVOKE_NONE = 0;
+        // WTD_REVOKE_WHOLECHAIN (1) plutôt que WTD_REVOKE_NONE (0) : l'updateur télécharge déjà
+        // par HTTPS (accès réseau supposé), donc rien n'empêche de vérifier la révocation, et un
+        // certificat de signature révoqué doit être rejeté comme non fiable.
+        private const uint WTD_REVOKE_WHOLECHAIN = 1;
         private const uint WTD_CHOICE_FILE = 1;
         private const uint WTD_STATEACTION_VERIFY = 1;
         private const uint WTD_STATEACTION_CLOSE = 2;
@@ -237,7 +252,7 @@ namespace MiniFan
                     pPolicyCallbackData = IntPtr.Zero,
                     pSIPClientData = IntPtr.Zero,
                     dwUIChoice = WTD_UI_NONE,
-                    fdwRevocationChecks = WTD_REVOKE_NONE,
+                    fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN,
                     dwUnionChoice = WTD_CHOICE_FILE,
                     pFile = fileInfoPtr,
                     dwStateAction = WTD_STATEACTION_VERIFY,
@@ -307,6 +322,22 @@ namespace MiniFan
             Status = s;
             var h = Changed;
             if (h != null) h();
+        }
+
+        /// <summary>
+        /// Journalise durablement (fichier à côté de l'exe) un évènement de confiance
+        /// dégradée lors d'une MAJ, pour qu'il reste consultable après le redémarrage du
+        /// process qui suit immédiatement une installation acceptée.
+        /// </summary>
+        private static void LogDegradedTrust(string message)
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "minifan-update.log");
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [Updater] " + message + Environment.NewLine;
+                File.AppendAllText(path, line);
+            }
+            catch { /* la journalisation ne doit jamais faire échouer la MAJ */ }
         }
     }
 }

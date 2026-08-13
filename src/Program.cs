@@ -46,15 +46,20 @@ namespace MiniFan
                         UseShellExecute = true,
                         Verb = "runas"
                     };
+                    Process.Start(psi);
+                    // Ne relâcher le mutex qu'APRÈS le succès du relancement élevé : si
+                    // Process.Start lève (UAC refusé), on tombe dans le catch ci-dessous et ce
+                    // process NON élevé continue de tourner — il doit alors garder le mutex pour
+                    // que la garantie d'instance unique reste valable.
                     _mutex.ReleaseMutex();
                     _mutex.Dispose();
-                    Process.Start(psi);
                     return;
                 }
                 catch
                 {
                     // UAC refusé : on continue sans pilotage (lecture seule impossible aussi,
-                    // l'UI l'indiquera).
+                    // l'UI l'indiquera). Le mutex n'a pas été relâché : il reste détenu par ce
+                    // process qui continue de tourner.
                 }
             }
 

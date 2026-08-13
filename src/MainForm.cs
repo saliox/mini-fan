@@ -60,7 +60,10 @@ namespace MiniFan
             // visible ("fantôme") jusqu'à ce que l'utilisateur passe la souris dessus.
             _upd.BeforeExit += delegate
             {
-                try { _tray.Visible = false; _tray.Dispose(); } catch { }
+                // BeforeExit est levé de façon synchrone depuis un thread du ThreadPool
+                // (voir Updater.CheckAsync) : comme pour Updater.Changed ci-dessus, il faut
+                // repasser sur le thread UI avant de toucher un contrôle WinForms.
+                try { BeginInvoke((Action)delegate { _tray.Visible = false; _tray.Dispose(); }); } catch { }
             };
 
             _ctl.Tick();
