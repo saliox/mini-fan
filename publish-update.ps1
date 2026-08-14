@@ -28,6 +28,14 @@ Push-Location $root
 try {
     $exePath = Join-Path $root "build\MiniFan.exe"
 
+    # Empreinte SHA-256 du binaire publié, écrite dans un fichier ANNEXE machine-lisible
+    # (MiniFan.exe.sha256) publié comme asset de la release à côté de l'exe. C'est ce fichier
+    # qu'install.ps1 télécharge et vérifie AVANT d'exécuter/installer quoi que ce soit — sans
+    # lui, personne ne vérifiait jamais l'empreinte affichée en fin de script ci-dessous.
+    $shaPath = Join-Path $root "build\MiniFan.exe.sha256"
+    $sha = (Get-FileHash $exePath -Algorithm SHA256).Hash
+    Set-Content -Path $shaPath -Value $sha -NoNewline -Encoding ASCII
+
     git add -A
     if ($LASTEXITCODE -ne 0) { throw "git add a échoué (code $LASTEXITCODE)." }
     git commit -m "v$Version - $Notes"
@@ -35,12 +43,10 @@ try {
     git push
     if ($LASTEXITCODE -ne 0) { throw "git push a échoué (code $LASTEXITCODE)." }
 
-    gh release create "v$Version" $exePath (Join-Path $root "install.ps1") `
+    gh release create "v$Version" $exePath $shaPath (Join-Path $root "install.ps1") `
         --title "Mini Fan v$Version" --notes $Notes
     if ($LASTEXITCODE -ne 0) { throw "gh release create a échoué (code $LASTEXITCODE)." }
 
-    # Empreinte SHA-256 du binaire publié (contrôle d'intégrité manuel côté utilisateur).
-    $sha = (Get-FileHash $exePath -Algorithm SHA256).Hash
     Write-Host ""
     Write-Host "SHA-256 MiniFan.exe : $sha"
     Write-Host "v$Version publiée. Le portable se mettra à jour automatiquement." -ForegroundColor Green

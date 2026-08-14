@@ -58,9 +58,31 @@ namespace MiniFan
             // L'updateur appelle Environment.Exit(0) juste après avoir levé cet événement pour
             // lancer l'installation : sans ça, l'icône de la zone de notification restait
             // visible ("fantôme") jusqu'à ce que l'utilisateur passe la souris dessus.
+            //
+            // Check() (et donc l'événement BeforeExit) s'exécute sur un thread ThreadPool, pas
+            // sur le thread UI : NotifyIcon (comme tout composant Windows Forms) doit être
+            // manipulé/disposé depuis le thread qui l'a créé, sous peine de comportement
+            // indéfini. On marshale donc l'action vers le thread UI via Invoke — SYNCHRONE
+            // (pas BeginInvoke) pour garantir que l'icône a bien disparu AVANT le
+            // Environment.Exit(0) qui suit immédiatement dans Updater.Check(). On protège
+            // l'appel au cas où le handle de la fenêtre serait déjà détruit pendant l'arrêt.
             _upd.BeforeExit += delegate
             {
-                try { _tray.Visible = false; _tray.Dispose(); } catch { }
+                try
+                {
+                    if (IsHandleCreated && !IsDisposed)
+                    {
+                        Invoke((Action)delegate
+                        {
+                            try { _tray.Visible = false; _tray.Dispose(); } catch { }
+                        });
+                    }
+                    else
+                    {
+                        try { _tray.Visible = false; _tray.Dispose(); } catch { }
+                    }
+                }
+                catch { }
             };
 
             _ctl.Tick();

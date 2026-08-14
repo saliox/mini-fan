@@ -20,6 +20,12 @@ namespace MiniFan
         private int _tick;
         private bool _cpuEverSeen;
         private bool _gpuEverSeen;
+        private int _cpuFailStreak;
+        private int _gpuFailStreak;
+        // Nombre de ticks d'échec CONSÉCUTIFS (capteur déjà vu auparavant qui ne répond plus)
+        // à partir duquel on considère la panne comme PERSISTANTE plutôt que comme un simple
+        // glitch WMI/EC transitoire (voir Tick()).
+        private const int PersistentFailureThreshold = 3;
         private string[] _gameNames = new string[0];
         private string _gamesRaw;
 
@@ -54,8 +60,10 @@ namespace MiniFan
             else if (_cfg.Mode == "silent") { want = false; Reason = "boost désactivé"; }
             else
             {
-                if (Cpu.HasValue) _cpuEverSeen = true;
-                if (Gpu.HasValue) _gpuEverSeen = true;
+                if (Cpu.HasValue) { _cpuEverSeen = true; _cpuFailStreak = 0; }
+                else if (_cpuEverSeen) _cpuFailStreak++;
+                if (Gpu.HasValue) { _gpuEverSeen = true; _gpuFailStreak = 0; }
+                else if (_gpuEverSeen) _gpuFailStreak++;
 
                 bool hot = (Cpu.HasValue && Cpu.Value >= _cfg.CpuOn) || (Gpu.HasValue && Gpu.Value >= _cfg.GpuOn);
                 // Un capteur jamais vu (absent sur ce matériel, ex. pas de GPU dédié) est ignoré
@@ -66,6 +74,16 @@ namespace MiniFan
                 bool cpuCool = Cpu.HasValue ? Cpu.Value <= _cfg.CpuOff : !_cpuEverSeen;
                 bool gpuCool = Gpu.HasValue ? Gpu.Value <= _cfg.GpuOff : !_gpuEverSeen;
                 bool cool = cpuCool && gpuCool;
+                // Panne PERSISTANTE (plusieurs ticks consécutifs, pas un simple glitch) d'un
+                // capteur déjà vu auparavant : on ne peut plus se fier à sa lecture ni pour
+                // "hot" ni pour "cool". Symétrique au fail-safe ci-dessus (qui ne s'applique
+                // que si le boost est DÉJÀ actif) : sans ça, un capteur qui casse pendant que
+                // le boost est inactif (idle) ne déclenchait jamais rien et laissait chauffer
+                // la machine en silence. On préfère sur-refroidir (déclencher le boost) que
+                // laisser un capteur mort masquer une vraie surchauffe.
+                bool sensorFailurePersistent =
+                    (_cpuEverSeen && !Cpu.HasValue && _cpuFailStreak >= PersistentFailureThreshold) ||
+                    (_gpuEverSeen && !Gpu.HasValue && _gpuFailStreak >= PersistentFailureThreshold);
                 bool prev = _lastWant.HasValue && _lastWant.Value;
                 if (prev)
                 {
@@ -74,10 +92,11 @@ namespace MiniFan
                 }
                 else
                 {
-                    want = hot || GameDetected;
+                    want = hot || GameDetected || sensorFailurePersistent;
                 }
                 Reason = GameDetected ? "jeu détecté : " + GameName
                        : hot ? "température élevée"
+                       : sensorFailurePersistent ? "capteur en échec persistant — refroidissement de sécurité"
                        : want ? "refroidissement en cours" : "";
             }
 

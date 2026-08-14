@@ -85,7 +85,11 @@ namespace MiniFan
 
             SetStatus("Téléchargement de la v" + remote + "…");
             string exe = Process.GetCurrentProcess().MainModule.FileName;
-            string newExe = exe + ".new";
+            // Nom de fichier de préproduction NON prévisible (suffixe GUID) : un nom fixe
+            // comme "MiniFan.exe.new" permettrait à un autre processus local de préparer /
+            // surveiller ce chemin à l'avance et de gagner la course pendant la fenêtre
+            // TOCTOU entre l'écriture du téléchargement et son remplacement de l'exe final.
+            string newExe = exe + "." + Guid.NewGuid().ToString("N") + ".new";
             using (var wc = NewClient())
             {
                 wc.DownloadFile(url, newExe);
@@ -129,11 +133,75 @@ namespace MiniFan
             Environment.Exit(0);
         }
 
+        // ---- Épinglage du certificat de signature de code (certificate pinning) ----
+        //
+        // IsAuthenticodeTrusted() (WinVerifyTrust) prouve seulement que le binaire est signé
+        // par UN certificat dont la chaîne remonte à une autorité de confiance Windows —
+        // n'IMPORTE QUEL certificat de signature de code valide (y compris un certificat
+        // acheté par un attaquant, ou un certificat émis à un tiers) passe cette vérif. La
+        // continuité de signataire plus bas (currentExe vs newExe) ne s'active elle-même que
+        // si le build EXÉCUTÉ est déjà signé, ce qui n'est pas garanti (build.ps1 rend la
+        // signature optionnelle, aucune CI ne l'impose) : en pratique, un build non signé ne
+        // bénéficie d'AUCUNE des deux protections ci-dessus.
+        //
+        // L'épinglage ci-dessous fixe EXACTEMENT quelle empreinte de certificat est autorisée
+        // à signer une mise à jour officielle de Mini Fan, indépendamment de la signature (ou
+        // non) de l'exe courant.
+        //
+        // TODO(mainteneur) : AUCUN certificat de signature de code réel n'existe encore pour
+        // ce projet à ce jour (aucun .pfx, aucune empreinte, aucune CI de signature dans le
+        // dépôt — build.ps1 ne signe que si MINIFAN_SIGN_THUMBPRINT/MINIFAN_SIGN_PFX est
+        // fourni manuellement, ce qui n'est fait nulle part actuellement). Dès qu'un
+        // certificat officiel est acquis et utilisé pour publier les releases, renseigner ici
+        // sa véritable empreinte (thumbprint SHA-1, format Windows standard — 40 caractères
+        // hexadécimaux), obtenue par exemple avec :
+        //   (Get-AuthenticodeSignature .\build\MiniFan.exe).SignerCertificate.Thumbprint
+        // Exemple : private const string PinnedSigningThumbprint = "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2";
+        private const string PinnedSigningThumbprint = ""; // TODO: renseigner l'empreinte réelle ici dès qu'un certificat officiel existe
+
+        /// <summary>
+        /// Compare l'empreinte du certificat signataire du binaire téléchargé à
+        /// PinnedSigningThumbprint. Quand l'empreinte est renseignée, elle est AUTORITAIRE :
+        /// tout binaire qui ne correspond pas exactement est refusé, même s'il est par
+        /// ailleurs signé par un certificat valide et fiable (fail-closed). Tant qu'aucune
+        /// empreinte officielle n'existe encore (voir TODO ci-dessus), cette étape ne peut
+        /// pas filtrer sur UN certificat précis et se contente de laisser passer — mais ce
+        /// n'est PAS un contournement pour autant : IsAuthenticodeTrusted() (chaîne de
+        /// confiance + révocation) et la continuité de signataire restent toutes deux
+        /// appliquées indépendamment, avant et après cet appel.
+        /// </summary>
+        private bool VerifyPinnedCertificate(string newExe)
+        {
+            if (string.IsNullOrEmpty(PinnedSigningThumbprint)) return true;
+
+            string thumbprint;
+            try
+            {
+                using (var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(newExe)))
+                {
+                    thumbprint = cert.Thumbprint;
+                }
+            }
+            catch (Exception ex)
+            {
+                SetStatus("MAJ refusée : certificat illisible (" + Short(ex.Message) + ")");
+                return false;
+            }
+
+            if (!string.Equals(thumbprint, PinnedSigningThumbprint, StringComparison.OrdinalIgnoreCase))
+            {
+                SetStatus("MAJ refusée : certificat de signature non reconnu (empreinte différente)");
+                return false;
+            }
+            return true;
+        }
+
         /// <summary>
         /// Vérifie que le binaire téléchargé porte une signature Authenticode valide et
         /// FIABLE (chaîne de confiance résolue par Windows via WinVerifyTrust — pas seulement
         /// la présence d'un certificat, qui peut être falsifiée en copiant la table de
-        /// certificats d'un exécutable légitime sur un binaire différent). Si l'exe courant
+        /// certificats d'un exécutable légitime sur un binaire différent), que son certificat
+        /// correspond à l'empreinte épinglée (quand elle est renseignée), et si l'exe courant
         /// est lui-même signé, exige en plus la continuité de signataire.
         /// Retourne true UNIQUEMENT si le téléchargement est cryptographiquement valide.
         /// </summary>
@@ -146,6 +214,8 @@ namespace MiniFan
                     SetStatus("MAJ refusée : signature du binaire téléchargé invalide ou non fiable");
                     return false;
                 }
+
+                if (!VerifyPinnedCertificate(newExe)) return false;
 
                 X509Certificate currentCert;
                 try
@@ -182,6 +252,10 @@ namespace MiniFan
         private static readonly Guid WINTRUST_ACTION_GENERIC_VERIFY_V2 = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
         private const uint WTD_UI_NONE = 2;
         private const uint WTD_REVOKE_NONE = 0;
+        // Vérifie la révocation sur TOUTE la chaîne (pas seulement la feuille) : un certificat
+        // de signature de code compromis et révoqué après coup doit être refusé, pas accepté
+        // indéfiniment comme c'était le cas avec WTD_REVOKE_NONE.
+        private const uint WTD_REVOKE_WHOLECHAIN = 1;
         private const uint WTD_CHOICE_FILE = 1;
         private const uint WTD_STATEACTION_VERIFY = 1;
         private const uint WTD_STATEACTION_CLOSE = 2;
@@ -216,7 +290,46 @@ namespace MiniFan
         private static extern uint WinVerifyTrust(IntPtr hwnd,
             [MarshalAs(UnmanagedType.LPStruct)] Guid pgActionID, ref WINTRUST_DATA pWVTData);
 
+        // Codes d'erreur WinVerifyTrust signalant que la révocation n'a PAS pu être
+        // déterminée (typiquement : pas d'accès réseau pour joindre l'OCSP/CRL) — distincts
+        // d'un certificat EFFECTIVEMENT révoqué (qui renvoie un autre code, ex. CERT_E_REVOKED
+        // = 0x800B010C, et reste refusé sans repli possible ci-dessous).
+        private const uint CRYPT_E_NO_REVOCATION_CHECK = 0x80092012;
+        private const uint CRYPT_E_REVOCATION_OFFLINE = 0x80092013;
+        private const uint CERT_E_REVOCATION_FAILURE = 0x800B010E;
+
+        private static bool IsRevocationInconclusive(uint result)
+        {
+            return result == CRYPT_E_NO_REVOCATION_CHECK
+                || result == CRYPT_E_REVOCATION_OFFLINE
+                || result == CERT_E_REVOCATION_FAILURE;
+        }
+
         private static bool IsAuthenticodeTrusted(string filePath)
+        {
+            uint result = RunWinVerifyTrust(filePath, WTD_REVOKE_WHOLECHAIN);
+            if (result == 0) return true;
+
+            if (IsRevocationInconclusive(result))
+            {
+                // Best-effort : la vérification de révocation exige un accès réseau
+                // (OCSP/CRL). Sur une machine hors ligne ou dont le réseau bloque ces
+                // requêtes, on ne bloque pas la MAJ pour ce seul motif — on retente SANS
+                // vérif de révocation (la signature et la chaîne de confiance, elles, restent
+                // pleinement vérifiées) et on journalise un avertissement. La vérif de
+                // révocation reste activée par défaut : seule son indisponibilité réseau est
+                // traitée comme "non concluante" plutôt que comme un échec dur ; un
+                // certificat EFFECTIVEMENT révoqué (résultat différent) reste refusé.
+                LogWarning("Révocation non vérifiable pour '" + filePath + "' (code 0x" +
+                    result.ToString("X8") + "), nouvelle tentative sans vérif de révocation.");
+                uint fallback = RunWinVerifyTrust(filePath, WTD_REVOKE_NONE);
+                return fallback == 0;
+            }
+
+            return false;
+        }
+
+        private static uint RunWinVerifyTrust(string filePath, uint revocationChecks)
         {
             var fileInfo = new WINTRUST_FILE_INFO
             {
@@ -237,7 +350,7 @@ namespace MiniFan
                     pPolicyCallbackData = IntPtr.Zero,
                     pSIPClientData = IntPtr.Zero,
                     dwUIChoice = WTD_UI_NONE,
-                    fdwRevocationChecks = WTD_REVOKE_NONE,
+                    fdwRevocationChecks = revocationChecks,
                     dwUnionChoice = WTD_CHOICE_FILE,
                     pFile = fileInfoPtr,
                     dwStateAction = WTD_STATEACTION_VERIFY,
@@ -252,16 +365,27 @@ namespace MiniFan
                 data.dwStateAction = WTD_STATEACTION_CLOSE;
                 WinVerifyTrust(new IntPtr(-1), WINTRUST_ACTION_GENERIC_VERIFY_V2, ref data);
 
-                return result == 0;
+                return result;
             }
             catch
             {
-                return false;
+                return unchecked((uint)0x80004005); // E_FAIL générique : traité comme échec, pas comme "non concluant"
             }
             finally
             {
                 Marshal.FreeHGlobal(fileInfoPtr);
             }
+        }
+
+        private static void LogWarning(string message)
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "minifan-error.log");
+                File.AppendAllText(path, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") +
+                    " [UpdaterWarning] " + message + Environment.NewLine);
+            }
+            catch { /* le logging ne doit jamais faire planter la MAJ */ }
         }
 
         private static Version Normalize(Version v)
