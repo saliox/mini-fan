@@ -66,6 +66,12 @@ namespace MiniFan
                 bool cpuCool = Cpu.HasValue ? Cpu.Value <= _cfg.CpuOff : !_cpuEverSeen;
                 bool gpuCool = Gpu.HasValue ? Gpu.Value <= _cfg.GpuOff : !_gpuEverSeen;
                 bool cool = cpuCool && gpuCool;
+                // Un capteur déjà vu qui ne répond plus CE tick, alors que le boost n'est PAS
+                // encore actif : symétrique de la protection ci-dessus. Sans ça, une panne totale
+                // et simultanée des deux lectures EC (CPU + GPU) au moment précis où le boost est
+                // éteint ne déclenchait jamais le boost, quelle que soit la température réelle
+                // (fail-open). On considère ce cas comme potentiellement chaud.
+                bool sensorDropout = (!Cpu.HasValue && _cpuEverSeen) || (!Gpu.HasValue && _gpuEverSeen);
                 bool prev = _lastWant.HasValue && _lastWant.Value;
                 if (prev)
                 {
@@ -74,10 +80,11 @@ namespace MiniFan
                 }
                 else
                 {
-                    want = hot || GameDetected;
+                    want = hot || GameDetected || sensorDropout;
                 }
                 Reason = GameDetected ? "jeu détecté : " + GameName
                        : hot ? "température élevée"
+                       : (!hot && sensorDropout && want) ? "lecture capteur indisponible — sécurité"
                        : want ? "refroidissement en cours" : "";
             }
 
